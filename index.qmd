@@ -1,0 +1,308 @@
+---
+title: "Shine a little more light inside black-box models"
+author: "Max Kuhn"
+format:
+  revealjs: 
+    slide-number: true
+    footer: <https://tidymodels.org>
+    include-before-body: header.html
+    include-after-body: footer-annotations.html
+    theme: [default, tidymodels.scss]
+    width: 1280
+    height: 720
+knitr:
+  opts_chunk: 
+    echo: true
+    collapse: true
+    comment: "#>"
+---
+
+```{r}
+#| label: startup
+#| include: false
+
+library(tidymodels)
+library(characterize)
+library(ggrepel)
+library(doMC)
+
+# ------------------------------------------------------------------------------
+
+tidymodels_prefer()
+theme_set(theme_bw())
+options(pillar.advice = FALSE, pillar.min_title_chars = Inf)
+registerDoMC(cores = parallel::detectCores())
+
+# ------------------------------------------------------------------------------
+
+set.seed(1707)
+example_data <- 
+  sim_regression(500) %>% 
+  bind_cols(sim_noise(500, 300))
+```
+
+```{r}
+#| label: lasso-calcs
+#| include: false
+#| cache: true
+
+pen_vals <- 10^seq(1, -5, length.out = 50)
+
+set.seed(652)
+rs <- bootstraps(example_data)
+
+rec <- 
+  recipe(outcome ~ ., data = example_data) %>% 
+  step_normalize(all_predictors())
+
+reg_spec <- 
+  linear_reg(mixture = 1, penalty = tune()) %>% 
+  set_engine("glmnet", path_values = pen_vals)
+
+ctrl <- control_grid(extract = retain_characteristics)
+
+reg_res <- 
+  reg_spec %>% 
+  tune_grid(
+    rec, 
+    resamples = rs,
+    grid = tibble(penalty = pen_vals),
+    control = ctrl
+  )
+```
+
+## Understanding models
+
+When we are optimizing models, we often want to compare model complexity and performance. 
+
+We want: a simple model that perform well
+
+## An example
+
+The lasso is a statistical tool that does feature selection during the model fit. 
+
+The "penalty" is a tuning parameter and controls how many predictors are retained. 
+
+We can _optimize_ our model over the penalty value!
+
+
+```{css, echo = FALSE}
+.centered {
+  text-align: center !important
+}
+```
+
+:::: {.columns}
+
+::: {.column width="40%"}
+![](a_little.png){fig-align="center" width=40%}
+
+::: {.centered}
+Many predictors
+
+Model error unknown
+:::
+
+:::
+
+::: {.column width="10%"}
+<!-- empty column to create gap -->
+:::
+
+::: {.column width="40%"}
+![](a_lot.png){fig-align="center" width=40%}
+
+::: {.centered}
+Few predictors
+
+Model error unknown
+:::
+
+:::
+
+::::
+
+
+
+## What does this tell plot us? 
+
+```{r}
+#| label: penalty-autoplot
+#| echo: false
+#| out-width: 90%
+#| fig-width: 6.25
+#| fig-height: 4
+#| fig-align: "center"
+
+da_best <- 
+  show_best(reg_res, metric = "rmse", n = 1) %>% 
+  mutate(result = "Smallest\nerror!")
+
+
+autoplot(reg_res, metric = "rmse") +
+  labs(x = "Amount of Regularization (aka penalty)", y = "Error") +
+  geom_text_repel(
+    data = da_best,
+    aes(x = penalty, y = mean, label = result),
+    nudge_y = 10,
+    arrow = arrow(length = unit(0.1, "inches")),
+    col = "green4"
+  )
+```
+
+
+## ¯\\_(ツ)_/¯
+
+```{r}
+#| label: penalty-huh-1
+#| echo: false
+#| out-width: 90%
+#| fig-width: 6.25
+#| fig-height: 4
+#| fig-align: "center"
+
+rmses <- 
+  collect_metrics(reg_res) %>% 
+  filter(.metric == "rmse") %>% 
+  mutate(question = "how many\npredictors?")
+
+autoplot(reg_res, metric = "rmse") +
+  labs(x = "Amount of Regularization (aka penalty)", y = "Error") +
+  geom_text_repel(
+    data = rmses %>% slice(45),
+    aes(x = penalty, y = mean, label = question),
+    nudge_y = 10,
+    arrow = arrow(length = unit(0.1, "inches")),
+    col = "red"
+  )
+```
+
+
+## (´･_･`)
+
+```{r}
+#| label: penalty-huh-2
+#| echo: false
+#| out-width: 90%
+#| fig-width: 6.25
+#| fig-height: 4
+#| fig-align: "center"
+
+autoplot(reg_res, metric = "rmse") +
+  labs(x = "Amount of Regularization (aka penalty)", y = "Error") +
+  geom_text_repel(
+    data = rmses %>% slice(nrow(rmses) - 1),
+    aes(x = penalty, y = mean, label = question),
+    nudge_y = 10,
+    arrow = arrow(length = unit(0.1, "inches")),
+    col = "blue"
+  )
+```
+
+## characterizations
+
+
+The `characterize` package gives you information about the important aspects of your model. 
+
+
+For example: translates the penalty to the number of predictors.
+
+<br>
+
+```r
+library(tidymodels)
+library(characterize)
+
+ctrl <- control_grid(extract = retain_characteristics)
+
+## insert tune code here
+
+collect_characteristics(tune_res)  # or
+
+collect_characteristics(tune_res, add_metrics = TRUE) # OR
+
+collect_characteristics(tune_res, add_metrics = TRUE, wide = TRUE)
+```
+
+## ᕕ( ᐛ )ᕗ
+
+```{r}
+#| label: penalty-yeah
+#| echo: false
+#| out-width: 90%
+#| fig-width: 6.25
+#| fig-height: 4
+#| fig-align: "center"
+
+collect_characteristics(reg_res, add_metrics = TRUE, wide = TRUE) %>%
+  filter(.metric == "num_active_features" & !is.na(rmse)) %>%
+  ggplot(aes(mean, rmse)) +
+  geom_point() +
+  geom_line()  +
+  labs(x = "Mean # Predictors", y = "Error")
+```
+
+
+## ℰ⋆‿⋆ℰ
+
+```{r}
+#| label: enhance
+#| echo: false
+#| out-width: 90%
+#| fig-width: 6.25
+#| fig-height: 4
+#| fig-align: "center"
+
+collect_characteristics(reg_res, add_metrics = TRUE, wide = TRUE) %>%
+  filter(.metric == "num_active_features" & !is.na(rmse)) %>%
+  filter(mean <= 50) %>%
+  ggplot(aes(mean, rmse)) +
+  geom_point() +
+  geom_line()  +
+  labs(x = "Mean # Predictors", y = "Error")
+```
+
+## A decision tree example
+
+
+```{r}
+#| label: cart-calc
+#| include: false
+#| cache: true
+cart_spec <- 
+  decision_tree(cost_complexity = tune(), min_n = tune()) %>%
+  set_mode("regression")
+
+set.seed(3785)
+cart_res <- 
+  cart_spec %>% 
+  tune_grid(
+    outcome ~ .,
+    resamples = rs, 
+    grid = 50, control = ctrl)
+```
+```{r}
+#| label: cart
+#| echo: false
+#| out-width: 20%
+#| fig-width: 8
+#| fig-height: 4
+#| fig-align: "center"
+cart_res %>% 
+  collect_characteristics(add_metrics = TRUE, wide = TRUE) %>%
+  ggplot(aes(mean, rmse)) +
+  geom_smooth(se = FALSE, col = rgb(0, 0, 1, 1 / 3), span = 1 / 2) +
+  geom_point(alpha = 0.4, cex = 2.5) +
+  facet_wrap(~ .metric, scales = "free_x") +
+  labs(x = "Characteristic Value", y = "Error")
+```
+
+
+## Thanks!
+
+Check it out: 
+
+```r
+pak::pak("topepo/characterize")
+```
+
